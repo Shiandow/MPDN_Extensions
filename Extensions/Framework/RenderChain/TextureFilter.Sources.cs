@@ -16,10 +16,7 @@
 
 using System;
 using System.Collections.Generic;
-using Mpdn;
-using Mpdn.Extensions.Framework;
 using Mpdn.Extensions.Framework.Filter;
-using Mpdn.Extensions.Framework.RenderChain;
 using Mpdn.RenderScript;
 using Size = System.Drawing.Size;
 
@@ -30,45 +27,84 @@ namespace Mpdn.Extensions.Framework.RenderChain
     { }
 
     public class SourceTextureOutput<TTexture> : FilterOutput, ITextureOutput<TTexture>
-    where TTexture : class, IBaseTexture
+        where TTexture : class, IBaseTexture
     {
         private readonly bool m_ManageTexture;
 
         public virtual TTexture Texture { get; private set; }
 
-        public SourceTextureOutput(TTexture texture, bool manageTexture = false)
+        public SourceTextureOutput(TTexture texture, bool manageTexture)
+            : this(manageTexture)
         {
-            m_ManageTexture = manageTexture;
+            if (texture == null)
+                throw new ArgumentNullException(nameof(texture));
+
             Texture = texture;
         }
 
-        protected SourceTextureOutput() { }
+        protected SourceTextureOutput(bool manageTexture)
+        {
+            m_ManageTexture = manageTexture;
+        }
 
-        public TextureSize Size
+        public virtual TextureSize Size
         {
             get { return Texture.GetSize(); }
         }
 
-        public TextureFormat Format
+        public virtual TextureFormat Format
         {
             get { return Texture.Format; }
         }
 
-        public override void Allocate()
-        { }
-
-        public override void Deallocate()
-        { }
+        public override void Allocate() { }
+        public override void Deallocate() { }
 
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
-            if (m_ManageTexture) // Disabled by default to keep backwards compatibility
+            if (m_ManageTexture)
                 DisposeHelper.Dispose(Texture);
         }
     };
 
-    public class ManagedTexture<TTexture> where TTexture : class, IBaseTexture
+    public class DeferredTextureOutput<TTexture> : SourceTextureOutput<TTexture>
+        where TTexture : class, IBaseTexture
+    {
+        private readonly Func<TTexture> m_TextureFunc;
+        private readonly Func<TextureSize> m_Size;
+        private readonly Func<TextureFormat> m_Format;
+
+        public DeferredTextureOutput(Func<TTexture> textureFunc, TextureSize size)
+            : this(textureFunc, () => size, null)
+        { }
+
+        public DeferredTextureOutput(Func<TTexture> textureFunc, TextureSize size, TextureFormat format)
+            : this(textureFunc, () => size, () => format)
+        { }
+
+        public DeferredTextureOutput(Func<TTexture> textureFunc, Func<TextureSize> size = null, Func<TextureFormat> format = null)
+            : base(false)
+        {
+            m_TextureFunc = textureFunc;
+            m_Size = size ?? (() => new TextureSize(0,0));
+            m_Format = format ?? (() => Renderer.RenderQuality.GetTextureFormat());
+        }
+
+        public override TTexture Texture { get { return m_TextureFunc(); } }
+
+        public override TextureSize Size
+        {
+            get { return Texture == null ? m_Size() : Texture.GetSize(); }
+        }
+
+        public override TextureFormat Format
+        {
+            get { return Texture == null ? m_Format() : Texture.Format; }
+        }
+    }
+
+    public class ManagedTexture<TTexture> : IDisposable where TTexture : class, IBaseTexture
     {
         private TTexture m_Texture;
         private int m_Leases;
@@ -80,6 +116,22 @@ namespace Mpdn.Extensions.Framework.RenderChain
                 throw new ArgumentNullException("texture");
             }
             m_Texture = texture;
+        }
+
+        ~ManagedTexture()
+        {
+            Dispose(false);
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        public virtual void Dispose(bool disposing)
+        {
+            Discard();
         }
 
         public Lease GetLease()
@@ -97,9 +149,10 @@ namespace Mpdn.Extensions.Framework.RenderChain
             if (m_Leases <= 0) Discard();
         }
 
-        public virtual void Discard()
+        private void Discard()
         {
             DisposeHelper.Dispose(ref m_Texture);
+            m_Leases = 0;
         }
 
         public bool Valid
@@ -112,7 +165,7 @@ namespace Mpdn.Extensions.Framework.RenderChain
             private ManagedTexture<TTexture> m_Owner;
 
             public Lease(ManagedTexture<TTexture> owner)
-                : base(owner.m_Texture)
+                : base(owner.m_Texture, false)
             {
                 m_Owner = owner;
             }
@@ -137,10 +190,8 @@ namespace Mpdn.Extensions.Framework.RenderChain
     public class TextureSourceFilter<TTexture> : SourceFilter<ITextureOutput<TTexture>>, ITextureFilter<TTexture>
      where TTexture : class, IBaseTexture
     {
-        protected bool ManageTexture;
-
-        public TextureSourceFilter(TTexture texture)
-            : this(new SourceTextureOutput<TTexture>(texture))
+        public TextureSourceFilter(TTexture texture, bool manageTexture)
+            : this(new SourceTextureOutput<TTexture>(texture, manageTexture))
         { }
 
         public TextureSourceFilter(ITextureOutput<TTexture> output)
@@ -150,12 +201,20 @@ namespace Mpdn.Extensions.Framework.RenderChain
             Tag = new EmptyTag();
         }
     }
+    
+    public sealed class NullFilter : BaseSourceFilter<ITextureOutput<ITexture2D>>, ITextureFilter
+    {
+        protected override ITextureOutput<ITexture2D> DefineOutput()
+        {
+            return new DeferredTextureOutput<ITexture2D>(() => Renderer.OutputRenderTarget, Renderer.TargetSize);
+        }
+    }
 
     public sealed class YSourceFilter : BaseSourceFilter<ITextureOutput<ITexture2D>>, ITextureFilter
     {
         protected override ITextureOutput<ITexture2D> DefineOutput()
         {
-            return new SourceTextureOutput<ITexture2D>(Renderer.TextureY);
+            return new DeferredTextureOutput<ITexture2D>(() => Renderer.TextureY, Renderer.LumaSize);
         }
     }
 
@@ -163,7 +222,7 @@ namespace Mpdn.Extensions.Framework.RenderChain
     {
         protected override ITextureOutput<ITexture2D> DefineOutput()
         {
-            return new SourceTextureOutput<ITexture2D>(Renderer.TextureU);
+            return new DeferredTextureOutput<ITexture2D>(() => Renderer.TextureU, Renderer.ChromaSize);
         }
     }
 
@@ -171,19 +230,25 @@ namespace Mpdn.Extensions.Framework.RenderChain
     {
         protected override ITextureOutput<ITexture2D> DefineOutput()
         {
-            return new SourceTextureOutput<ITexture2D>(Renderer.TextureV);
+            return new DeferredTextureOutput<ITexture2D>(() => Renderer.TextureV, Renderer.ChromaSize);
         }
     }
 
     public sealed class VideoSourceFilter : TextureFilter, IResizeableFilter
     {
-        private readonly VideoSourceOutput m_VideoSource = new VideoSourceOutput();
-        private TextureSize m_OutputSize;
-        private YuvSourceFilter m_YuvFilter;
+        private readonly TrueSourceFilter m_TrueSource;
+        private RgbFilter m_RgbSource;
+
+        public VideoSourceFilter() 
+            : base(new RgbFilter(new TrueSourceFilter()))
+        {
+            m_RgbSource = (RgbFilter) InputFilters[0];
+            m_TrueSource = (TrueSourceFilter) m_RgbSource.InputFilters[0];
+        }
 
         public void SetSize(TextureSize targetSize)
         {
-            m_OutputSize = targetSize;
+            m_TrueSource.OutputSize = targetSize;
         }
 
         public void EnableTag()
@@ -193,29 +258,7 @@ namespace Mpdn.Extensions.Framework.RenderChain
 
         public ScriptInterfaceDescriptor Descriptor
         {
-            get
-            {
-                return new ScriptInterfaceDescriptor
-                {
-                    WantYuv = m_YuvFilter != null,
-                    Prescale = LastDependentIndex > 0 || m_YuvFilter != null,
-                    PrescaleSize = (Size)Output.Size
-                };
-            }
-        }
-
-        public ITextureFilter<ITexture2D> GetYuv()
-        {
-            if (m_YuvFilter != null)
-                return m_YuvFilter;
-
-            if (Renderer.InputFormat.IsYuv())
-            {
-                m_YuvFilter = new YuvSourceFilter(this);
-                return m_YuvFilter;
-            }
-
-            return new YuvFilter(this);
+            get { return m_TrueSource.Descriptor; }
         }
 
         public string Status()
@@ -235,73 +278,64 @@ namespace Mpdn.Extensions.Framework.RenderChain
 
         private bool m_Tagged;
 
-        protected override ITextureOutput<ITexture2D> DefineOutput()
-        {
-            if (m_YuvFilter == null)
-                return m_VideoSource;
-
-            return base.DefineOutput();
-        }
-
         protected override TextureSize OutputSize
         {
-            get { return (m_OutputSize.IsEmpty ? Renderer.VideoSize : m_OutputSize); }
+            get { return m_TrueSource.OutputSize; }
         }
 
         protected override void Render(IList<ITextureOutput<IBaseTexture>> textureOutputs)
         {
-            if (m_YuvFilter == null)
-                return;
-
-            Renderer.ConvertToRgb(Target.Texture, Renderer.InputRenderTarget, Renderer.Colorimetric,
-                Renderer.OutputLimitedRange, Renderer.LimitChroma);
+            throw new NotImplementedException();
         }
 
         protected override IFilter<ITextureOutput<ITexture2D>> Optimize()
         {
+            var result = m_TrueSource.WantYuv ? (IFilter<ITextureOutput<ITexture2D>>) m_TrueSource.RgbSource : m_TrueSource;
+
             if (m_Tagged)
             {
-                AddTag(Status());
+                result.AddTag(Status());
                 m_Tagged = false;
             }
 
-            return base.Optimize();
+            return result;
         }
 
         #endregion
 
         #region Auxilary Classes
 
-        private class YuvSourceFilter : TextureSourceFilter<ITexture2D>, ITextureFilter
+        public sealed class TrueSourceFilter : BaseSourceFilter<ITextureOutput<ITexture2D>>, ITextureFilter
         {
-            public YuvSourceFilter(VideoSourceFilter rgbSourceFilter)
-                : base(rgbSourceFilter.Output)
-            {
-                Tag.AddInput(rgbSourceFilter);
-            }
-        }
+            public bool WantYuv { get; private set; }
+            public RgbFilter RgbSource { get; private set; }
 
-        private class VideoSourceOutput : SourceTextureOutput<ITargetTexture>
-        {
-            private int m_Allocations;
+            public TextureSize OutputSize;
 
-            public override ITargetTexture Texture
+            public ITextureFilter GetYuv()
             {
-                get { return Renderer.InputRenderTarget; }
+                WantYuv = true;
+                RgbSource = new RgbFilter(this);
+                return this;
             }
 
-            public override void Allocate()
+            public ScriptInterfaceDescriptor Descriptor
             {
-                m_Allocations++;
-            }
-
-            public override void Deallocate()
-            {
-                m_Allocations--;
-                if (m_Allocations <= 0)
+                get
                 {
-                    TexturePool.PutTempTexture(Texture);
+                    return new ScriptInterfaceDescriptor
+                    {
+                        WantYuv = WantYuv,
+                        Prescale = LastDependentIndex > 0 || (WantYuv && RgbSource.LastDependentIndex > 0),
+                        PrescaleSize = (Size)OutputSize
+                    };
                 }
+            }
+
+            protected override ITextureOutput<ITexture2D> DefineOutput()
+            {
+                OutputSize = Renderer.VideoSize;
+                return new DeferredTextureOutput<ITexture2D>(() => Renderer.InputRenderTarget, () => OutputSize);
             }
         }
 

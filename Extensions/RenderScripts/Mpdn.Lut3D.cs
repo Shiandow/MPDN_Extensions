@@ -18,6 +18,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using Mpdn.Extensions.Framework;
 using Mpdn.Extensions.Framework.RenderChain;
 using Mpdn.RenderScript;
 
@@ -79,7 +80,7 @@ namespace Mpdn.Extensions.RenderScripts
                 get { return "Lut3D"; }
             }
 
-            protected override IFilter CreateFilter(IFilter input)
+            protected override ITextureFilter CreateFilter(ITextureFilter input)
             {
                 if (!Activate || !File.Exists(FileName))
                     return input;
@@ -94,8 +95,8 @@ namespace Mpdn.Extensions.RenderScripts
                 if (m_Texture3D != null)
                 {
                     // If new 3dlut file was selected, manually dispose resources before we load the new one
-                    if (m_CurrentFileName != FileName) m_Texture3D.Discard();
-                    if (m_Texture3D.Valid) return;
+                    if (m_CurrentFileName != FileName) DisposeHelper.Dispose(ref m_Texture3D);
+                    else if (m_Texture3D.Valid) return;
                 }
                 Create3DLut(FileName);
             }

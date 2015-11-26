@@ -26,8 +26,7 @@ namespace Mpdn.Extensions.Framework.Filter
             Tag = FilterTag.Bottom;
         }
 
-        protected override void Render(IList<IFilterOutput> inputs)
-        { }
+        protected override void Render(IList<IFilterOutput> inputs) { }
     }
 
     public class SourceFilter<TOutput> : BaseSourceFilter<TOutput>

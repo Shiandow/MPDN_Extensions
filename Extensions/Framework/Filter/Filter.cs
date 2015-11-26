@@ -128,6 +128,9 @@ namespace Mpdn.Extensions.Framework.Filter
                 LastDependentIndex = f.LastDependentIndex;
             }
 
+            // Fix output
+            m_Output = Output;
+
             m_FilterIndex = LastDependentIndex;
 
             foreach (var filter in InputFilters)
@@ -143,8 +146,6 @@ namespace Mpdn.Extensions.Framework.Filter
         {
             if (m_CompilationResult != null)
                 return m_CompilationResult;
-
-            m_Output = Output;
 
             m_OriginalInputFilters = InputFilters;
             InputFilters = InputFilters
@@ -167,7 +168,7 @@ namespace Mpdn.Extensions.Framework.Filter
             return this;
         }
 
-        public void Render()
+        public virtual void Render()
         {
             if (m_Updated)
                 return;
@@ -188,16 +189,13 @@ namespace Mpdn.Extensions.Framework.Filter
 
             Render(inputTextures);
 
-            foreach (var filter in InputFilters)
+            foreach (var filter in InputFilters.Where(filter => filter.LastDependentIndex <= m_FilterIndex))
             {
-                if (filter.LastDependentIndex <= m_FilterIndex)
-                {
-                    filter.Reset();
-                }
+                filter.Reset();
             }
         }
 
-        public void Reset()
+        public virtual void Reset()
         {
             m_Updated = false;
 
@@ -221,9 +219,12 @@ namespace Mpdn.Extensions.Framework.Filter
 
         protected virtual void Dispose(bool disposing)
         {
+            if (!disposing)
+                return;
+
             DisposeHelper.DisposeElements(ref m_OriginalInputFilters);
             DisposeHelper.DisposeElements(InputFilters);
-            DisposeHelper.Dispose(Output);
+            DisposeHelper.Dispose(m_Output);
             InputFilters = null;
         }
 
