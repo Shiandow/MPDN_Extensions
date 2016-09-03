@@ -132,6 +132,12 @@ namespace Mpdn.Extensions.Framework
             var config = new MemConfig<TSettings>();
             return config.LoadFromString(input) ? config.Config : null;
         }
+
+        public static TSettings MakeXMLDuplicate<TSettings>(TSettings settings)
+            where TSettings : class, new()
+        {
+            return LoadFromString<TSettings>(SaveToString(settings));
+        }
     }
 
     public static class PresetHelper
